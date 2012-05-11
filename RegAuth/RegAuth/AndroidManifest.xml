@@ -20,6 +20,7 @@
         </activity>
         <activity android:name="ViewInform" android:label="Работа с данными">
         </activity>
+        <service android:name=".ServiceUpdateRSS"></service>
     </application>
    
     <uses-sdk android:minSdkVersion="8" />

@@ -1,24 +1,22 @@
 package com.example.regauth;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
+
 import java.util.ArrayList;
 
-import org.apache.http.HttpEntity;
-import org.apache.http.HttpResponse;
-import org.apache.http.StatusLine;
-import org.apache.http.client.ClientProtocolException;
-import org.apache.http.client.HttpClient;
-import org.apache.http.client.methods.HttpGet;
-import org.apache.http.impl.client.DefaultHttpClient;
 import org.json.JSONArray;
 import org.json.JSONObject;
-
 import android.app.Activity;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.ServiceConnection;
 import android.database.Cursor;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Message;
+import android.os.Messenger;
+import android.os.RemoteException;
 import android.util.Log;
 import android.view.ContextMenu;
 import android.view.MenuItem;
@@ -37,13 +35,17 @@ public class ViewInform extends Activity implements OnClickListener {
 	int IDUser, isAdmin;
 	String UserLogin;
 	Button btnCleanUser;
-	protected ListView mUserList;
+	ListView mUserList;
+	ArrayAdapter<String> adapter; 
     protected ArrayList<User> ListUser = new ArrayList<User>();
     private ArrayList<String> ListNews = new ArrayList<String>(); 
     DatabaseHelper dbHelper;
     protected static final int CONTEXTMENU_DELETEITEM = 0;
-    String URL = "http://twitter.com/statuses/user_timeline/vogella.json"; 
-	
+ 	
+    Messenger mService = null;
+    boolean mIsBound;
+    final Messenger mMessenger = new Messenger(new IncomingHandler());
+    
 	@Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -64,19 +66,9 @@ public class ViewInform extends Activity implements OnClickListener {
         mUserList = (ListView) this.findViewById(R.id.listViewInform);
         if (isAdmin==0){
         	list.setIndicator("Лента новостей");
-        	String readNews = readNews();
-    		try {
-    			JSONArray jsonArray = new JSONArray(readNews);
-
-    			for (int i = 0; i < jsonArray.length(); i++) {
-    				JSONObject jsonObject = jsonArray.getJSONObject(i);
-    				ListNews.add(jsonObject.getString("text"));
-    				Log.i("mytag", jsonObject.getString("text"));
-    			}
-    		} catch (Exception e) {
-    			e.printStackTrace();
-    		}
-    		mUserList.setAdapter(new ArrayAdapter<String>(this, R.layout.listitem, ListNews));
+        	CheckIfServiceIsRunning();
+            startService(new Intent(this, ServiceUpdateRSS.class));
+            doBindService();
         } else {
         	list.setIndicator("Список пользователей");
         	AddUserList();
@@ -94,7 +86,40 @@ public class ViewInform extends Activity implements OnClickListener {
         btnCleanUser.setOnClickListener(this);
         
         }
+	
+    private void CheckIfServiceIsRunning() {
+        //If the service is running when the activity starts, we want to automatically bind to it.
+        if (ServiceUpdateRSS.isRunning()) {
+            doBindService();
+        }
+    }
 
+	   class IncomingHandler extends Handler {
+	        @Override
+	        public void handleMessage(Message msg) {
+	            switch (msg.what) {
+	            case ServiceUpdateRSS.MSG_SET_STRING_VALUE:
+	            	String readNews = msg.getData().getString("str1");
+	                try {
+	                JSONArray jsonArray = new JSONArray(readNews);
+	                ListNews.clear();
+	    			for (int i = 0; i < jsonArray.length(); i++) {
+	    				JSONObject jsonObject = jsonArray.getJSONObject(i);
+	    				ListNews.add(jsonObject.getString("text"));
+	    				Log.i("mytag", jsonObject.getString("text"));
+	    			}
+	        		} catch (Exception e) {
+	        			e.printStackTrace();
+	        		}
+	                refreshNewsListItems(ListNews);
+	                break;
+	            default:
+	                super.handleMessage(msg);
+	            }
+	        }
+	    }
+
+	
 	public void onClick(View v) {
 		 switch (v.getId()) {
 		    case R.id.btnCleanUser:
@@ -130,6 +155,12 @@ public class ViewInform extends Activity implements OnClickListener {
 		 mUserList.setAdapter(new ArrayAdapter<User>(this, R.layout.listitem, ListUser));
 	 }
 
+	 private void refreshNewsListItems(ArrayList<String> ListNews) {
+		 adapter = new ArrayAdapter<String>(this, R.layout.listitem, ListNews);
+		 mUserList.setAdapter(adapter);
+		 adapter.notifyDataSetChanged(); 
+	 }
+	 
 	 private void initListView() {
          /* Loads the items to the ListView. */
 		 refreshUserListItems();
@@ -161,30 +192,57 @@ public class ViewInform extends Activity implements OnClickListener {
              return false;
      }
 	 
-	 public String readNews() {
-			StringBuilder builder = new StringBuilder();
-			HttpClient client = new DefaultHttpClient();
-			HttpGet httpGet = new HttpGet(URL);
-			try {
-				HttpResponse response = client.execute(httpGet);
-				StatusLine statusLine = response.getStatusLine();
-				int statusCode = statusLine.getStatusCode();
-				if (statusCode == 200) {
-					HttpEntity entity = response.getEntity();
-					InputStream content = entity.getContent();
-					BufferedReader reader = new BufferedReader(
-							new InputStreamReader(content));
-					String line;
-					while ((line = reader.readLine()) != null) {
-						builder.append(line);
-					}
-				}
-			} catch (ClientProtocolException e) {
-				e.printStackTrace();
-			} catch (IOException e) {
-				e.printStackTrace();
-			}
-			return builder.toString();
-		}
+	    private ServiceConnection mConnection = new ServiceConnection() {
+	        public void onServiceConnected(ComponentName className, IBinder service) {
+	            mService = new Messenger(service);
+	            try {
+	                Message msg = Message.obtain(null, ServiceUpdateRSS.MSG_REGISTER_CLIENT);
+	                msg.replyTo = mMessenger;
+	                mService.send(msg);
+	            } catch (RemoteException e) {
+	                // In this case the service has crashed before we could even do anything with it
+	            }
+	        }
+
+	        public void onServiceDisconnected(ComponentName className) {
+	            // This is called when the connection with the service has been unexpectedly disconnected - process crashed.
+	            mService = null;
+	        }
+	    };
 	 
+	    void doBindService() {
+	        bindService(new Intent(this, ServiceUpdateRSS.class), mConnection, Context.BIND_AUTO_CREATE);
+	        mIsBound = true;
+	    }
+	    void doUnbindService() {
+	        if (mIsBound) {
+	            // If we have received the service, and hence registered with it, then now is the time to unregister.
+	            if (mService != null) {
+	                try {
+	                    Message msg = Message.obtain(null, ServiceUpdateRSS.MSG_UNREGISTER_CLIENT);
+	                    msg.replyTo = mMessenger;
+	                    mService.send(msg);
+	                } catch (RemoteException e) {
+	                    // There is nothing special we need to do if the service has crashed.
+	                }
+	            }
+	            // Detach our existing connection.
+	            unbindService(mConnection);
+	            mIsBound = false;
+	        }
+	    }
+	    
+	    @Override
+	    protected void onDestroy() {
+	        super.onDestroy();
+	        try {
+	            doUnbindService();
+	            stopService(new Intent(ViewInform.this, ServiceUpdateRSS.class));
+	 	        } catch (Throwable t) {
+	            Log.e("mytag", "Failed to unbind from the service", t);
+	        }
+	    }
+
+
+
 }
